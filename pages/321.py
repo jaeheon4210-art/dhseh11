@@ -26,10 +26,9 @@ def load_data():
         mean_temp="mean"
     ).reset_index()
     
-    # 관측일수 300일 이상 필터링
     valid_data = yearly_summary[yearly_summary["count"] >= 300].copy()
     
-    # 고차 곡선 오버플로우 방지를 위한 X 변환 (1908년 기준, 100년 단위 스케일링)
+    # X 스케일링: 1908년 기준 100년 단위
     valid_data["X_scaled"] = (valid_data["연도"] - 1908) / 100.0
     return valid_data
 
@@ -39,7 +38,7 @@ data = load_data()
 train_df = data[data["연도"] < 2005].copy()
 test_df = data[data["연도"] >= 2005].copy()
 
-# 데이터 분할 통계 화면 표시
+# 데이터 분할 통계 표시
 col1, col2 = st.columns(2)
 with col1:
     st.metric(
@@ -56,7 +55,7 @@ with col2:
 
 st.divider()
 
-# 3. 모델 학습 및 평가 (1차, 3차, 9차)
+# 3. 모델 학습 및 평가
 degrees = [1, 3, 9]
 eval_results = []
 models = {}
@@ -67,52 +66,48 @@ y_train = train_df["mean_temp"]
 X_test = test_df[["X_scaled"]]
 y_test = test_df["mean_temp"]
 
-# 2050년 스케일링 값 계산
 x_2050_scaled = pd.DataFrame({"X_scaled": [(2050 - 1908) / 100.0]})
 
 for deg in degrees:
-    # 파이프라인으로 다항 피처 생성 및 선형 회귀 결합
     model = make_pipeline(PolynomialFeatures(degree=deg), LinearRegression())
     model.fit(X_train, y_train)
     
-    # 오직 테스트 데이터로만 예측 및 MAE 채점
     y_pred_test = model.predict(X_test)
     mae = mean_absolute_error(y_test, y_pred_test)
     
-    # 2050년 기온 예측
     pred_2050 = model.predict(x_2050_scaled)[0]
     
     models[deg] = model
     eval_results.append({
         "곡선 모델": f"{deg}차 곡선 ({'직선' if deg == 1 else '다항선'})",
         "테스트 데이터 MAE (평균 오차)": f"{mae:.2f} °C",
-        "2050년 예상 기온": f"{pred_2050:.2f} °C"
+        "2050년 예상 기온": f"{pred_2050:,.2f} °C"
     })
 
 # 4. 평가 결과 표 출력
 st.subheader("📊 테스트 데이터 채점 및 2050년 예측 결과")
 st.dataframe(pd.DataFrame(eval_results), use_container_width=True)
 
-# 5. Plotly 시각화 (산점도 + 회귀 곡선들)
+# 5. Plotly 시각화
 st.subheader("📈 회귀 곡선 추이 비교")
 fig = go.Figure()
 
-# 훈련 데이터 산점도
+# 훈련 데이터
 fig.add_trace(go.Scatter(
     x=train_df["연도"], y=train_df["mean_temp"],
     mode="markers", name="훈련 데이터 (1908~2004)",
     marker=dict(color="#1f77b4", size=6, opacity=0.7)
 ))
 
-# 테스트 데이터 산점도
+# 테스트 데이터
 fig.add_trace(go.Scatter(
     x=test_df["연도"], y=test_df["mean_temp"],
     mode="markers", name="테스트 데이터 (2005~2025)",
     marker=dict(color="#d62728", size=8, symbol="diamond")
 ))
 
-# 연속적인 연도 라인 생성 (1908년 ~ 2050년)
-plot_years = np.linspace(1908, 2050, 300)
+# 예측 라인 생성 (1908년 ~ 2050년)
+plot_years = np.linspace(1908, 2050, 400)
 plot_X = pd.DataFrame({"X_scaled": (plot_years - 1908) / 100.0})
 
 colors = ["#2ca02c", "#ff7f0e", "#9467bd"]
@@ -120,11 +115,27 @@ line_styles = ["solid", "dash", "dot"]
 
 for deg, color, style in zip(degrees, colors, line_styles):
     plot_y = models[deg].predict(plot_X)
+    
+    # 9차 등 고차 곡선의 발산치로 인한 시각화 찌그러짐 방지 (0~35도 제한)
+    plot_y_display = np.clip(plot_y, 0, 35)
+    
     fig.add_trace(go.Scatter(
-        x=plot_years, y=plot_y,
+        x=plot_years, y=plot_y_display,
         mode="lines",
         name=f"{deg}차 곡선 예측선",
         line=dict(color=color, width=2.5, dash=style)
     ))
 
-# 2050년 구분
+# 2050년 구분선
+fig.add_vline(x=2050, line_dash="dash", line_color="gray", annotation_text="2050년")
+
+fig.update_layout(
+    title="서울 연평균 기온 다항 회귀 모델 비교 (1908 ~ 2050)",
+    xaxis_title="연도",
+    yaxis_title="평균기온 (°C)",
+    yaxis=dict(range=[5, 25]), # 관측 데이터 중심의 Y축 가독 범위 설정
+    hovermode="x unified",
+    template="plotly_white"
+)
+
+st.plotly_chart(fig, use_container_width=True)
